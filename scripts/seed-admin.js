@@ -12,5 +12,5 @@ const seedAdmin = async () => {
   stmt.run(hashedPassword);
   console.log('✅ Admin user created: username=admin, password=admin123');
 };
-
+// Run the seeding function
 seedAdmin();
