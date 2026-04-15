@@ -208,3 +208,86 @@ exports.reprintBill = (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to fetch bill for reprint', data: null });
   }
 };
+
+// ✅ Get paid bills with filters
+exports.getPaidBills = (req, res) => {
+  try {
+    const { search, customerId, dateFrom, dateTo, sortBy, order, limit } = req.query;
+    
+    // Build filters object with validated values
+    const filters = {};
+    
+    // Search: only add if non-empty string
+    if (search && typeof search === 'string' && search.trim().length >= 2) {
+      filters.search = search.trim();
+    }
+    
+    // Customer ID: only add if valid number
+    if (customerId && !isNaN(parseInt(customerId))) {
+      filters.customerId = parseInt(customerId);
+    }
+    
+    // Date filters: validate ISO date format
+    if (dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) {
+      filters.dateFrom = dateFrom;
+    }
+    if (dateTo && /^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+      filters.dateTo = dateTo;
+    }
+    
+    // SortBy: whitelist validation
+    const validSorts = ['created_at', 'due_date', 'grand_total', 'customer_name', 'bill_number'];
+    if (sortBy && validSorts.includes(sortBy)) {
+      filters.sortBy = sortBy;
+    }
+    
+    // Order: ASC or DESC
+    if (order && ['ASC', 'DESC'].includes(order.toUpperCase())) {
+      filters.order = order.toUpperCase();
+    }
+    
+    // Limit: valid positive number
+    if (limit && !isNaN(parseInt(limit))) {
+      const limitNum = parseInt(limit);
+      if (limitNum > 0 && limitNum <= 1000) {
+        filters.limit = limitNum;
+      }
+    }
+    
+    // Get paid bills from model
+    const bills = CreditBill.getPaidBills(filters);
+    
+    // Format for frontend
+    const formattedBills = (bills || []).map(bill => ({
+      ...bill,
+      due_date: bill.due_date ? new Date(bill.due_date).toISOString().slice(0, 10) : null,
+      created_at: new Date(bill.created_at).toISOString(),
+      paid_at: bill.updated_at ? new Date(bill.updated_at).toISOString() : null
+    }));
+    
+    // Get stats for the same filter range
+    const stats = CreditBill.getPaidBillsStats({ dateFrom: filters.dateFrom, dateTo: filters.dateTo });
+    
+    res.json({ 
+      success: true, 
+      data: formattedBills,
+      stats: {
+        total_bills: stats.total_bills || 0,
+        unique_customers: stats.unique_customers || 0,
+        total_revenue: parseFloat(stats.total_revenue || 0),
+        total_paid: parseFloat(stats.total_paid || 0),
+        avg_bill_value: parseFloat(stats.avg_bill_value || 0)
+      }
+    });
+    
+  } catch (error) {
+    console.error('Get paid bills controller error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch paid bills',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      data: [],
+      stats: null
+    });
+  }
+};

@@ -10,6 +10,9 @@ router.use(authenticateToken);
 // ✅ CRITICAL: Define SPECIFIC routes BEFORE parameterized routes (:id)
 // Express matches routes in order - /pending would match /:id if :id comes first!
 
+router.get('/paid', authorizeRoles('admin', 'staff'), creditBillController.getPaidBills);
+
+
 // --- Specific routes (must come FIRST) ---
 router.get('/pending', authorizeRoles('admin', 'staff'), creditBillController.getPendingBills);
 router.get('/outstanding', authorizeRoles('admin', 'staff'), creditBillController.getOutstandingBills);

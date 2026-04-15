@@ -289,7 +289,121 @@ const CreditBill = {
     
     const items = db.prepare('SELECT * FROM credit_bill_items WHERE bill_id = ?').all(billId);
     return { ...bill, items };
+  },
+
+  getPaidBills: (filters = {}) => {
+  try {
+    // Base query: only paid bills (status='paid' OR outstanding_amount=0)
+    let query = `
+      SELECT cb.*, c.name as customer_name, c.company_name, c.mobile, c.address, c.city
+      FROM credit_bills cb
+      LEFT JOIN customers c ON cb.customer_id = c.id
+      WHERE (cb.status = 'paid' OR cb.outstanding_amount <= 0)
+    `;
+    
+    const params = [];
+    
+    // Filter by date range (created_at / bill date)
+    if (filters.dateFrom) {
+      query += ` AND cb.created_at >= ?`;
+      params.push(filters.dateFrom);
+    }
+    if (filters.dateTo) {
+      // Add 1 day to include the entire end date
+      query += ` AND cb.created_at < date(?, '+1 day')`;
+      params.push(filters.dateTo);
+    }
+    
+    // Filter by customer details
+    if (filters.search && typeof filters.search === 'string' && filters.search.trim().length > 0) {
+      const term = `%${filters.search.trim()}%`;
+      query += ` AND (c.name LIKE ? OR c.company_name LIKE ? OR c.mobile LIKE ? OR c.address LIKE ? OR c.city LIKE ?)`;
+      params.push(term, term, term, term, term);
+    }
+    
+    // Filter by customer ID
+    if (filters.customerId && !isNaN(parseInt(filters.customerId))) {
+      query += ` AND cb.customer_id = ?`;
+      params.push(parseInt(filters.customerId));
+    }
+    
+    // Sorting
+    const sortBy = filters.sortBy || 'created_at';
+    const order = filters.order || 'DESC';
+    
+    const validSortColumns = {
+      'created_at': 'cb.created_at',
+      'due_date': 'cb.due_date',
+      'grand_total': 'cb.grand_total',
+      'customer_name': 'c.name',
+      'bill_number': 'cb.bill_number'
+    };
+    
+    const safeSortColumn = validSortColumns[sortBy] || 'cb.created_at';
+    const safeOrder = order?.toString().toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    
+    query += ` ORDER BY ${safeSortColumn} ${safeOrder}`;
+    
+    // Limit
+    if (filters.limit && !isNaN(parseInt(filters.limit))) {
+      const limit = parseInt(filters.limit);
+      if (limit > 0 && limit <= 1000) {
+        query += ` LIMIT ?`;
+        params.push(limit);
+      }
+    }
+    
+    return db.prepare(query).all(...params);
+    
+  } catch (error) {
+    console.error('CreditBill.getPaidBills error:', error);
+    throw error;
   }
+},
+
+// ✅ Get paid bills statistics (for dashboard)
+getPaidBillsStats: (filters = {}) => {
+  try {
+    let query = `
+      SELECT 
+        COUNT(*) as total_bills,
+        COUNT(DISTINCT customer_id) as unique_customers,
+        SUM(grand_total) as total_revenue,
+        SUM(paid_amount) as total_paid,
+        AVG(grand_total) as avg_bill_value,
+        MIN(created_at) as first_bill,
+        MAX(created_at) as last_bill
+      FROM credit_bills
+      WHERE (status = 'paid' OR outstanding_amount <= 0)
+    `;
+    
+    const params = [];
+    
+    // Apply date filters to stats
+    if (filters.dateFrom) {
+      query += ` AND created_at >= ?`;
+      params.push(filters.dateFrom);
+    }
+    if (filters.dateTo) {
+      query += ` AND created_at < date(?, '+1 day')`;
+      params.push(filters.dateTo);
+    }
+    
+    return db.prepare(query).get(...params);
+    
+  } catch (error) {
+    console.error('CreditBill.getPaidBillsStats error:', error);
+    return {
+      total_bills: 0,
+      unique_customers: 0,
+      total_revenue: 0,
+      total_paid: 0,
+      avg_bill_value: 0,
+      first_bill: null,
+      last_bill: null
+    };
+  }
+}
 };
 
 module.exports = CreditBill;
