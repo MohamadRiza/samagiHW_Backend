@@ -1,5 +1,4 @@
 const db = require('../config/database');
-const Product = require('./Product');
 
 // Initialize credit bills tables
 const initCreditBillsTable = () => {
@@ -44,6 +43,7 @@ const initCreditBillsTable = () => {
     CREATE INDEX IF NOT EXISTS idx_credit_bills_customer ON credit_bills(customer_id);
     CREATE INDEX IF NOT EXISTS idx_credit_bills_status ON credit_bills(status);
     CREATE INDEX IF NOT EXISTS idx_credit_bills_date ON credit_bills(created_at);
+    CREATE INDEX IF NOT EXISTS idx_credit_bills_due ON credit_bills(due_date);
   `);
 };
 
@@ -58,11 +58,11 @@ const generateBillNumber = () => {
 const CreditBill = {
   init: initCreditBillsTable,
   
-  // Create credit bill with transaction
+  // Create credit bill with atomic transaction
   create: (billData, cashier) => {
     const transaction = db.transaction(() => {
       const billNumber = generateBillNumber();
-      const dueDate = billData.due_date || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10); // Default 30 days
+      const dueDate = billData.due_date || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       
       let totalAmount = 0;
       let totalDiscount = 0;
@@ -74,9 +74,8 @@ const CreditBill = {
         if (product.stock_quantity < item.quantity) {
           throw new Error(`Insufficient stock for ${item.product_name}. Available: ${product.stock_quantity}`);
         }
-        
         totalAmount += item.unit_price * item.quantity;
-        totalDiscount += item.discount_lkr * item.quantity;
+        totalDiscount += (item.discount_lkr || 0) * item.quantity;
       }
       
       const grandTotal = totalAmount - totalDiscount;
@@ -99,7 +98,7 @@ const CreditBill = {
         totalAmount,
         totalDiscount,
         grandTotal,
-        grandTotal, // Initially full amount is outstanding
+        grandTotal,
         dueDate,
         billData.notes || null,
         cashier.id,
@@ -117,8 +116,9 @@ const CreditBill = {
       const stockStmt = db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
       
       for (const item of billData.items) {
-        const subtotal = (item.unit_price * item.quantity) - (item.discount_lkr * item.quantity);
-        itemStmt.run(billId, item.product_id, item.product_name, item.barcode, item.unit_price, item.quantity, item.discount_lkr, subtotal);
+        const discountLkr = item.discount_lkr || 0;
+        const subtotal = (item.unit_price * item.quantity) - (discountLkr * item.quantity);
+        itemStmt.run(billId, item.product_id, item.product_name, item.barcode, item.unit_price, item.quantity, discountLkr, subtotal);
         stockStmt.run(item.quantity, item.product_id);
       }
       
@@ -135,10 +135,8 @@ const CreditBill = {
   // Get recent credit bills
   getRecent: (limit = 50) => {
     return db.prepare(`
-      SELECT cb.*, c.company_name,
-             COUNT(cbi.id) as item_count 
+      SELECT cb.*, COUNT(cbi.id) as item_count 
       FROM credit_bills cb 
-      LEFT JOIN customers c ON cb.customer_id = c.id
       LEFT JOIN credit_bill_items cbi ON cb.id = cbi.bill_id 
       GROUP BY cb.id 
       ORDER BY cb.created_at DESC 
@@ -148,15 +146,8 @@ const CreditBill = {
   
   // Get single bill with items
   getById: (id) => {
-    const bill = db.prepare(`
-      SELECT cb.*, c.company_name, c.address, c.city, c.email, c.nic_id
-      FROM credit_bills cb 
-      LEFT JOIN customers c ON cb.customer_id = c.id
-      WHERE cb.id = ?
-    `).get(id);
-    
+    const bill = db.prepare('SELECT * FROM credit_bills WHERE id = ?').get(id);
     if (!bill) return null;
-    
     const items = db.prepare('SELECT * FROM credit_bill_items WHERE bill_id = ?').all(id);
     return { ...bill, items };
   },
@@ -170,7 +161,7 @@ const CreditBill = {
     `).all(customerId);
   },
   
-  // Get outstanding bills
+  // Get outstanding bills (not fully paid)
   getOutstanding: () => {
     return db.prepare(`
       SELECT cb.*, c.name as customer_name, c.company_name, c.mobile
@@ -181,44 +172,123 @@ const CreditBill = {
     `).all();
   },
   
-  // Update bill payment
-  updatePayment: (billId, paidAmount) => {
+  // ✅ FIXED: Get pending bills with filters and sorting
+  getPending: (filters = {}) => {
+    let query = `
+      SELECT cb.*, c.name as customer_name, c.company_name, c.mobile, c.address, c.city
+      FROM credit_bills cb
+      LEFT JOIN customers c ON cb.customer_id = c.id
+      WHERE cb.status != 'paid' AND cb.outstanding_amount > 0
+    `;
+    
+    const params = [];
+    
+    // Filter by customer details
+    if (filters.search) {
+      const term = `%${filters.search}%`;
+      query += ` AND (c.name LIKE ? OR c.company_name LIKE ? OR c.mobile LIKE ? OR c.address LIKE ? OR c.city LIKE ?)`;
+      params.push(term, term, term, term, term);
+    }
+    
+    if (filters.customerId) {
+      query += ` AND cb.customer_id = ?`;
+      params.push(filters.customerId);
+    }
+    
+    // ✅ FIX: Only apply status filter if it's a valid value (not 'all')
+    if (filters.status && ['pending', 'partial'].includes(filters.status)) {
+      query += ` AND cb.status = ?`;
+      params.push(filters.status);
+    }
+    // If status is 'all' or null/undefined, skip the filter - shows both pending + partial
+    
+    // Sorting
+    const sortBy = filters.sortBy || 'due_date';
+    const order = filters.order || 'ASC';
+    const validSorts = ['created_at', 'due_date', 'grand_total', 'outstanding_amount', 'customer_name'];
+    const safeSort = validSorts.includes(sortBy) ? sortBy : 'due_date';
+    const safeOrder = order.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+    
+    query += ` ORDER BY ${safeSort} ${safeOrder}`;
+    
+    if (filters.limit) {
+      query += ` LIMIT ?`;
+      params.push(parseInt(filters.limit));
+    }
+    
+    return db.prepare(query).all(...params);
+  },
+  
+  // ✅ Update bill payment (full or partial)
+  updatePayment: (billId, paymentData) => {
     const transaction = db.transaction(() => {
       const bill = db.prepare('SELECT * FROM credit_bills WHERE id = ?').get(billId);
       if (!bill) throw new Error('Bill not found');
       
-      const newPaidAmount = bill.paid_amount + paidAmount;
-      const newOutstanding = bill.grand_total - newPaidAmount;
+      const paidAmount = parseFloat(paymentData.paid_amount) || 0;
+      if (paidAmount <= 0) throw new Error('Payment amount must be greater than 0');
+      if (paidAmount > bill.outstanding_amount + 0.01) {
+        throw new Error(`Payment amount cannot exceed outstanding: LKR ${bill.outstanding_amount.toFixed(2)}`);
+      }
       
-      let status = 'pending';
-      if (newOutstanding <= 0) {
-        status = 'paid';
+      const newPaidAmount = bill.paid_amount + paidAmount;
+      const newOutstanding = Math.max(0, bill.grand_total - newPaidAmount);
+      
+      // Determine new status
+      let newStatus = bill.status;
+      if (newOutstanding <= 0.01) {
+        newStatus = 'paid';
       } else if (newPaidAmount > 0) {
-        status = 'partial';
+        newStatus = 'partial';
       }
       
       // Update bill
-      db.prepare(`
+      const billUpdate = db.prepare(`
         UPDATE credit_bills SET
           paid_amount = ?,
           outstanding_amount = ?,
           status = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(newPaidAmount, Math.max(0, newOutstanding), status, billId);
+      `).run(newPaidAmount, newOutstanding, newStatus, billId);
       
-      // Update customer outstanding
-      db.prepare(`
+      // Update customer outstanding balance
+      const customerUpdate = db.prepare(`
         UPDATE customers SET
           outstanding_balance = outstanding_balance - ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(paidAmount, bill.customer_id);
       
-      return { success: true, newOutstanding, status };
+      if (billUpdate.changes === 0 || customerUpdate.changes === 0) {
+        throw new Error('Failed to update payment');
+      }
+      
+      return {
+        success: true,
+        billId,
+        newOutstanding,
+        newStatus,
+        paidAmount
+      };
     });
     
     return transaction();
+  },
+  
+  // ✅ Get single bill with items for receipt reprint
+  getBillWithItems: (billId) => {
+    const bill = db.prepare(`
+      SELECT cb.*, c.name as customer_name, c.company_name, c.mobile, c.address, c.city, c.email, c.nic_id
+      FROM credit_bills cb
+      LEFT JOIN customers c ON cb.customer_id = c.id
+      WHERE cb.id = ?
+    `).get(billId);
+    
+    if (!bill) return null;
+    
+    const items = db.prepare('SELECT * FROM credit_bill_items WHERE bill_id = ?').all(billId);
+    return { ...bill, items };
   }
 };
 
