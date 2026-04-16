@@ -187,3 +187,113 @@ exports.getCustomerById = (req, res) => {
     });
   }
 };
+
+// ✅ Get credit customers with full stats
+exports.getCreditCustomers = (req, res) => {
+  try {
+    const { search, minOutstanding, maxOutstanding, minBills, sortBy, order, limit } = req.query;
+    
+    // Build filters object with validated values
+    const filters = {};
+    
+    // Search: only add if non-empty string
+    if (search && typeof search === 'string' && search.trim().length >= 2) {
+      filters.search = search.trim();
+    }
+    
+    // Outstanding range: only add if valid numbers
+    if (minOutstanding && !isNaN(parseFloat(minOutstanding))) {
+      filters.minOutstanding = parseFloat(minOutstanding);
+    }
+    if (maxOutstanding && !isNaN(parseFloat(maxOutstanding))) {
+      filters.maxOutstanding = parseFloat(maxOutstanding);
+    }
+    
+    // Min bills: only add if valid number
+    if (minBills && !isNaN(parseInt(minBills))) {
+      filters.minBills = parseInt(minBills);
+    }
+    
+    // SortBy: whitelist validation
+    const validSorts = ['name', 'company_name', 'mobile', 'city', 'total_outstanding', 'total_bills', 'pending_bills', 'last_bill_date'];
+    if (sortBy && validSorts.includes(sortBy)) {
+      filters.sortBy = sortBy;
+    }
+    
+    // Order: ASC or DESC
+    if (order && ['ASC', 'DESC'].includes(order.toUpperCase())) {
+      filters.order = order.toUpperCase();
+    }
+    
+    // Limit: valid positive number
+    if (limit && !isNaN(parseInt(limit))) {
+      const limitNum = parseInt(limit);
+      if (limitNum > 0 && limitNum <= 1000) {
+        filters.limit = limitNum;
+      }
+    }
+    
+    // Get credit customers from model
+    const customers = Customer.getCreditCustomers(filters);
+    
+    // Format for frontend
+    const formattedCustomers = (customers || []).map(customer => ({
+      ...customer,
+      last_bill_date: customer.last_bill_date ? new Date(customer.last_bill_date).toISOString() : null,
+      first_bill_date: customer.first_bill_date ? new Date(customer.first_bill_date).toISOString() : null,
+      // Ensure numeric fields are properly typed
+      total_outstanding: parseFloat(customer.total_outstanding || 0),
+      total_billed: parseFloat(customer.total_billed || 0),
+      total_paid: parseFloat(customer.total_paid || 0),
+      pending_bills: parseInt(customer.pending_bills || 0),
+      settled_bills: parseInt(customer.settled_bills || 0),
+      total_bills: parseInt(customer.total_bills || 0)
+    }));
+    
+    res.json({ success: true, data: formattedCustomers });
+    
+  } catch (error) {
+    console.error('Get credit customers controller error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch credit customers',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      data: [] 
+    });
+  }
+};
+
+// ✅ Get single customer with full stats and bill history
+exports.getCustomerWithStats = (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Valid customer ID required', 
+        data: null 
+      });
+    }
+    
+    const customer = Customer.getCustomerWithStats(parseInt(id));
+    
+    if (!customer) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Customer not found', 
+        data: null 
+      });
+    }
+    
+    res.json({ success: true, data: customer });
+    
+  } catch (error) {
+    console.error('Get customer with stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch customer details', 
+      data: null 
+    });
+  }
+};
