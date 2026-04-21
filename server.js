@@ -5,6 +5,8 @@ const path = require('path');
 
 // Import routes (component-based)
 const authRoutes = require('./routes/auth.routes');
+const ExpenseCategory = require('./models/ExpenseCategory');
+const Expense = require('./models/Expense');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -19,6 +21,10 @@ const CreditBill = require('./models/CreditBill');
 Customer.init();
 CreditBill.init();
 
+// ✅ Initialize tables on startup
+ExpenseCategory.init();
+Expense.init();
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -32,6 +38,8 @@ app.use('/api/products', require('./routes/product.routes'));
 app.use('/api/bills', require('./routes/bill.routes'));
 app.use('/api/customers', require('./routes/customer.routes'));
 app.use('/api/credit-bills', require('./routes/creditBill.routes'));
+app.use('/api/expense-categories', require('./routes/expenseCategory.routes'));
+app.use('/api/expenses', require('./routes/expense.routes'));
 
 // Health check
 app.get('/api/health', (req, res) => {
