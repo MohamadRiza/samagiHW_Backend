@@ -25,6 +25,10 @@ CreditBill.init();
 ExpenseCategory.init();
 Expense.init();
 
+// Initialize tables on startup:
+const Cheque = require('./models/Cheque');
+Cheque.init();
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -40,6 +44,8 @@ app.use('/api/customers', require('./routes/customer.routes'));
 app.use('/api/credit-bills', require('./routes/creditBill.routes'));
 app.use('/api/expense-categories', require('./routes/expenseCategory.routes'));
 app.use('/api/expenses', require('./routes/expense.routes'));
+app.use('/api/cheques', require('./routes/cheque.routes'));
+
 
 // Health check
 app.get('/api/health', (req, res) => {
