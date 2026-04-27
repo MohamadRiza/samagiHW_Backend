@@ -29,6 +29,10 @@ Expense.init();
 const Cheque = require('./models/Cheque');
 Cheque.init();
 
+// Initialize tables on startup:
+const Purchase = require('./models/Purchase');
+Purchase.init();
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -45,6 +49,8 @@ app.use('/api/credit-bills', require('./routes/creditBill.routes'));
 app.use('/api/expense-categories', require('./routes/expenseCategory.routes'));
 app.use('/api/expenses', require('./routes/expense.routes'));
 app.use('/api/cheques', require('./routes/cheque.routes'));
+app.use('/api/purchases', require('./routes/purchase.routes'));
+app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 // Health check
